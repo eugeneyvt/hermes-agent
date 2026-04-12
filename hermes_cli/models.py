@@ -102,12 +102,13 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "copilot-acp": [
         "copilot-acp",
     ],
-    "qwen-oauth": [
-        "coder-model",
-    ],
     "gemini-acp": [
+        "auto-gemini-3",
+        "auto-gemini-2.5",
+        "gemini-3.1-pro-preview",
         "gemini-3-flash-preview",
         "gemini-3.1-flash-lite-preview",
+        "gemini-2.5-pro",
         "gemini-2.5-flash",
         "gemini-2.5-flash-lite",
     ],

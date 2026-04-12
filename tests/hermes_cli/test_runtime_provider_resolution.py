@@ -186,7 +186,7 @@ def test_resolve_runtime_provider_uses_qwen_pool_entry(monkeypatch):
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "qwen-oauth")
     monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
-    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "qwen-oauth", "default": "coder-model"})
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "qwen-oauth", "default": "qwen3-coder-plus"})
 
     resolved = rp.resolve_runtime_provider(requested="qwen-oauth")
 

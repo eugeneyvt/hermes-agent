@@ -122,7 +122,6 @@ DEFAULT_CONTEXT_LENGTHS = {
     "llama": 131072,
     # Qwen — specific model families before the catch-all.
     # Official docs: https://help.aliyun.com/zh/model-studio/developer-reference/
-    "coder-model": 1000000,      # Qwen portal coder alias, 1M context
     "qwen3-coder-plus": 1000000,  # 1M context
     "qwen3-coder": 262144,        # 256K context
     "qwen": 131072,
@@ -243,6 +242,12 @@ def _infer_provider_from_url(base_url: str) -> Optional[str]:
     if not normalized:
         return None
     parsed = urlparse(normalized if "://" in normalized else f"https://{normalized}")
+    if parsed.scheme == "acp":
+        host = (parsed.netloc or parsed.path or "").lower()
+        if host == "gemini":
+            return "gemini-acp"
+        if host == "copilot":
+            return "copilot-acp"
     host = parsed.netloc.lower() or parsed.path.lower()
     for url_part, provider in _URL_TO_PROVIDER.items():
         if url_part in host:

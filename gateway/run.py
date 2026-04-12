@@ -8706,6 +8706,28 @@ class GatewayRunner:
                 self._running_agents_ts.pop(session_key, None)
             if self._draining:
                 self._update_runtime_status("draining")
+
+            # Gemini ACP relays remote MCP tool lifecycle events back into the
+            # gateway via per-turn stream handlers. Cached gateway agents keep
+            # their ACP clients alive across messages, so leaving those
+            # callbacks attached after a turn lets inactive sessions accumulate
+            # relay registrations. When Gemini emits a tool event without a
+            # scoped token, those stale registrations can cause the gateway to
+            # drop the event instead of showing progress in the active chat.
+            _cached_agent = agent_holder[0]
+            if (
+                _cached_agent is not None
+                and getattr(_cached_agent, "provider", None) == "gemini-acp"
+            ):
+                try:
+                    _cached_agent.tool_progress_callback = None
+                    _cached_agent.tool_start_callback = None
+                    _cached_agent.tool_complete_callback = None
+                    _cached_agent.stream_delta_callback = None
+                    if hasattr(_cached_agent, "_sync_client_stream_handlers"):
+                        _cached_agent._sync_client_stream_handlers()
+                except Exception as _cleanup_err:
+                    logger.debug("Gemini ACP handler cleanup failed: %s", _cleanup_err)
             
             # Wait for cancelled tasks
             for task in [progress_task, interrupt_monitor, tracking_task, _notify_task]:

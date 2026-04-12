@@ -232,12 +232,6 @@ class TestGetModelContextLength:
         assert get_model_context_length("qwen3-coder-plus") == 1000000
 
     @patch("agent.model_metadata.fetch_model_metadata")
-    def test_qwen_portal_coder_alias_context_length(self, mock_fetch):
-        """coder-model should map to the Qwen portal coder alias with a 1M window."""
-        mock_fetch.return_value = {}
-        assert get_model_context_length("coder-model") == 1000000
-
-    @patch("agent.model_metadata.fetch_model_metadata")
     def test_qwen3_coder_context_length(self, mock_fetch):
         """qwen3-coder has a 256K context window, not the generic 128K Qwen default."""
         mock_fetch.return_value = {}
@@ -248,6 +242,22 @@ class TestGetModelContextLength:
         """Generic qwen models still get the 128K default."""
         mock_fetch.return_value = {}
         assert get_model_context_length("qwen3-plus") == 131072
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    @patch("agent.models_dev.lookup_models_dev_context")
+    def test_gemini_acp_uses_models_dev_context(self, mock_lookup, mock_fetch):
+        mock_fetch.return_value = {}
+        mock_lookup.return_value = 1048576
+
+        assert (
+            get_model_context_length(
+                "gemini-3.1-flash-lite-preview",
+                base_url="acp://gemini",
+                provider="gemini-acp",
+            )
+            == 1048576
+        )
+        mock_lookup.assert_called_once_with("gemini-acp", "gemini-3.1-flash-lite-preview")
 
     @patch("agent.model_metadata.fetch_model_metadata")
     def test_api_missing_context_length_key(self, mock_fetch):

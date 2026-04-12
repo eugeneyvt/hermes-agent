@@ -162,6 +162,7 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "fireworks": "fireworks-ai",
     "huggingface": "huggingface",
     "gemini": "google",
+    "gemini-acp": "google",
     "google": "google",
     "xai": "xai",
     "xiaomi": "xiaomi",
@@ -262,6 +263,12 @@ def lookup_models_dev_context(provider: str, model: str) -> Optional[int]:
     Returns the context window in tokens, or None if not found.
     Handles case-insensitive matching and filters out context=0 entries.
     """
+    if provider == "gemini-acp":
+        if model == "auto-gemini-3":
+            model = "gemini-3.1-pro-preview"
+        elif model == "auto-gemini-2.5":
+            model = "gemini-2.5-pro"
+
     mdev_provider_id = PROVIDER_TO_MODELS_DEV.get(provider)
     if not mdev_provider_id:
         return None
@@ -677,5 +684,3 @@ def get_model_info(
             return _parse_model_info(mid, mdata, mdev_id)
 
     return None
-
-

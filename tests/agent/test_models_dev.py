@@ -13,6 +13,28 @@ from agent.models_dev import (
 
 
 SAMPLE_REGISTRY = {
+    "google": {
+        "id": "google",
+        "name": "Google",
+        "models": {
+            "gemini-3.1-pro-preview": {
+                "id": "gemini-3.1-pro-preview",
+                "tool_call": True,
+                "reasoning": True,
+                "limit": {"context": 1048576, "output": 65536},
+            },
+            "gemini-3.1-flash-lite-preview": {
+                "id": "gemini-3.1-flash-lite-preview",
+                "tool_call": True,
+                "limit": {"context": 1048576, "output": 65536},
+            },
+            "gemini-2.5-pro": {
+                "id": "gemini-2.5-pro",
+                "tool_call": True,
+                "limit": {"context": 1048576, "output": 65536},
+            },
+        },
+    },
     "anthropic": {
         "id": "anthropic",
         "name": "Anthropic",
@@ -84,6 +106,7 @@ class TestProviderMapping:
         assert PROVIDER_TO_MODELS_DEV["copilot"] == "github-copilot"
         assert PROVIDER_TO_MODELS_DEV["kilocode"] == "kilo"
         assert PROVIDER_TO_MODELS_DEV["ai-gateway"] == "vercel"
+        assert PROVIDER_TO_MODELS_DEV["gemini-acp"] == "google"
 
     def test_unmapped_provider_not_in_dict(self):
         assert "nous" not in PROVIDER_TO_MODELS_DEV
@@ -142,6 +165,24 @@ class TestLookupModelsDevContext:
         assert lookup_models_dev_context("anthropic", "claude-opus-4-6") == 1000000
         # GitHub Copilot: only 128K for same model
         assert lookup_models_dev_context("copilot", "claude-opus-4.6") == 128000
+
+    @patch("agent.models_dev.fetch_models_dev")
+    def test_gemini_acp_reuses_google_registry(self, mock_fetch):
+        mock_fetch.return_value = SAMPLE_REGISTRY
+        assert (
+            lookup_models_dev_context("gemini-acp", "gemini-3.1-flash-lite-preview")
+            == 1048576
+        )
+
+    @patch("agent.models_dev.fetch_models_dev")
+    def test_gemini_acp_auto_gemini_3_maps_to_3_1_pro(self, mock_fetch):
+        mock_fetch.return_value = SAMPLE_REGISTRY
+        assert lookup_models_dev_context("gemini-acp", "auto-gemini-3") == 1048576
+
+    @patch("agent.models_dev.fetch_models_dev")
+    def test_gemini_acp_auto_gemini_2_5_maps_to_2_5_pro(self, mock_fetch):
+        mock_fetch.return_value = SAMPLE_REGISTRY
+        assert lookup_models_dev_context("gemini-acp", "auto-gemini-2.5") == 1048576
 
     @patch("agent.models_dev.fetch_models_dev")
     def test_zero_context_filtered(self, mock_fetch):
@@ -262,6 +303,28 @@ class TestGetModelCapabilities:
             caps = get_model_capabilities("google", "gemma-3-1b")
         assert caps is not None
         assert caps.supports_vision is False
+
+    def test_gemini_acp_capabilities_reuse_google_registry(self):
+        mock_data = {
+            "google": {
+                "id": "google",
+                "models": {
+                    "gemini-2.5-flash": {
+                        "tool_call": True,
+                        "attachment": True,
+                        "reasoning": False,
+                        "family": "gemini-2.5",
+                        "limit": {"context": 1048576, "output": 65536},
+                    }
+                },
+            }
+        }
+        with patch("agent.models_dev.fetch_models_dev", return_value=mock_data):
+            caps = get_model_capabilities("gemini-acp", "gemini-2.5-flash")
+        assert caps is not None
+        assert caps.supports_tools is True
+        assert caps.supports_vision is True
+        assert caps.context_window == 1048576
 
     def test_modalities_non_dict_handled(self):
         """Non-dict modalities field should not crash."""

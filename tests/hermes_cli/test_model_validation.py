@@ -194,10 +194,8 @@ class TestProviderModelIds:
     def test_zai_returns_glm_models(self):
         assert "glm-5" in provider_model_ids("zai")
 
-    def test_qwen_oauth_returns_curated_models(self):
-        ids = provider_model_ids("qwen-oauth")
-
-        assert ids == ["coder-model"]
+    def test_qwen_oauth_returns_no_curated_models(self):
+        assert provider_model_ids("qwen-oauth") == []
 
     def test_copilot_prefers_live_catalog(self):
         with patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={"api_key": "gh-token"}), \
@@ -220,7 +218,11 @@ class TestProviderModelIds:
     def test_gemini_acp_returns_curated_models(self):
         ids = provider_model_ids("gemini-acp")
 
+        assert "auto-gemini-3" in ids
+        assert "auto-gemini-2.5" in ids
+        assert "gemini-3.1-pro-preview" in ids
         assert "gemini-2.5-flash" in ids
+        assert "gemini-2.5-pro" in ids
         assert "gemini-3-flash-preview" in ids
 
 
