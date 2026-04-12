@@ -83,6 +83,12 @@ _DEFAULT_PROVIDER_MODELS = {
     "copilot-acp": [
         "copilot-acp",
     ],
+    "gemini-acp": [
+        "gemini-3-flash-preview",
+        "gemini-3.1-flash-lite-preview",
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+    ],
     "copilot": [
         "gpt-5.4",
         "gpt-5.4-mini",
@@ -813,6 +819,7 @@ def setup_model_provider(config: dict, *, quick: bool = False):
             "nous-api": "Nous Portal API key",
             "copilot": "GitHub Copilot",
             "copilot-acp": "GitHub Copilot ACP",
+            "gemini-acp": "Gemini CLI ACP",
             "zai": "Z.AI / GLM",
             "kimi-coding": "Kimi / Moonshot",
             "minimax": "MiniMax",

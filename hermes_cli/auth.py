@@ -70,6 +70,7 @@ DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 DEFAULT_QWEN_BASE_URL = "https://portal.qwen.ai/v1"
 DEFAULT_GITHUB_MODELS_BASE_URL = "https://api.githubcopilot.com"
 DEFAULT_COPILOT_ACP_BASE_URL = "acp://copilot"
+DEFAULT_GEMINI_ACP_BASE_URL = "acp://gemini"
 CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
 CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
@@ -134,6 +135,13 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         auth_type="external_process",
         inference_base_url=DEFAULT_COPILOT_ACP_BASE_URL,
         base_url_env_var="COPILOT_ACP_BASE_URL",
+    ),
+    "gemini-acp": ProviderConfig(
+        id="gemini-acp",
+        name="Gemini CLI ACP",
+        auth_type="external_process",
+        inference_base_url=DEFAULT_GEMINI_ACP_BASE_URL,
+        base_url_env_var="GEMINI_ACP_BASE_URL",
     ),
     "gemini": ProviderConfig(
         id="gemini",
@@ -934,6 +942,7 @@ def resolve_provider(
         "github": "copilot", "github-copilot": "copilot",
         "github-models": "copilot", "github-model": "copilot",
         "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
+        "gemini-cli-acp": "gemini-acp", "google-gemini-acp": "gemini-acp",
         "aigateway": "ai-gateway", "vercel": "ai-gateway", "vercel-ai-gateway": "ai-gateway",
         "opencode": "opencode-zen", "zen": "opencode-zen",
         "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth",
@@ -2389,13 +2398,7 @@ def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
     if not pconfig or pconfig.auth_type != "external_process":
         return {"configured": False}
 
-    command = (
-        os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
-        or os.getenv("COPILOT_CLI_PATH", "").strip()
-        or "copilot"
-    )
-    raw_args = os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()
-    args = shlex.split(raw_args) if raw_args else ["--acp", "--stdio"]
+    command, args = _resolve_external_process_command(provider_id)
     base_url = os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
     if not base_url:
         base_url = pconfig.inference_base_url
@@ -2422,7 +2425,7 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return get_codex_auth_status()
     if target == "qwen-oauth":
         return get_qwen_auth_status()
-    if target == "copilot-acp":
+    if target in {"copilot-acp", "gemini-acp"}:
         return get_external_process_provider_status(target)
     # API-key providers
     pconfig = PROVIDER_REGISTRY.get(target)
@@ -2483,15 +2486,16 @@ def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str,
     if not base_url:
         base_url = pconfig.inference_base_url
 
-    command = (
-        os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
-        or os.getenv("COPILOT_CLI_PATH", "").strip()
-        or "copilot"
-    )
-    raw_args = os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()
-    args = shlex.split(raw_args) if raw_args else ["--acp", "--stdio"]
+    command, args = _resolve_external_process_command(provider_id)
     resolved_command = shutil.which(command) if command else None
     if not resolved_command and not base_url.startswith("acp+tcp://"):
+        if provider_id == "gemini-acp":
+            raise AuthError(
+                f"Could not find the Gemini CLI command '{command}'. "
+                "Install Gemini CLI or set HERMES_GEMINI_ACP_COMMAND/GEMINI_CLI_PATH.",
+                provider=provider_id,
+                code="missing_gemini_cli",
+            )
         raise AuthError(
             f"Could not find the Copilot CLI command '{command}'. "
             "Install GitHub Copilot CLI or set HERMES_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH.",
@@ -2501,12 +2505,35 @@ def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str,
 
     return {
         "provider": provider_id,
-        "api_key": "copilot-acp",
+        "api_key": provider_id,
         "base_url": base_url.rstrip("/"),
         "command": resolved_command or command,
         "args": args,
         "source": "process",
     }
+
+
+def _resolve_external_process_command(provider_id: str) -> tuple[str, list[str]]:
+    if provider_id == "gemini-acp":
+        command = (
+            os.getenv("HERMES_GEMINI_ACP_COMMAND", "").strip()
+            or os.getenv("GEMINI_CLI_PATH", "").strip()
+            or os.path.expanduser("~/.npm-global/bin/gemini")
+        )
+        if not (command and os.path.isabs(command) and os.path.isfile(command) and os.access(command, os.X_OK)):
+            command = command or "gemini"
+        raw_args = os.getenv("HERMES_GEMINI_ACP_ARGS", "").strip()
+        args = shlex.split(raw_args) if raw_args else ["--acp"]
+        return command, args
+
+    command = (
+        os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
+        or os.getenv("COPILOT_CLI_PATH", "").strip()
+        or "copilot"
+    )
+    raw_args = os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()
+    args = shlex.split(raw_args) if raw_args else ["--acp", "--stdio"]
+    return command, args
 
 
 # =============================================================================

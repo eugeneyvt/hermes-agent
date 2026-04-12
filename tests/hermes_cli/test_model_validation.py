@@ -166,6 +166,7 @@ class TestProviderLabel:
         assert provider_label("kimi") == "Kimi / Moonshot"
         assert provider_label("copilot") == "GitHub Copilot"
         assert provider_label("copilot-acp") == "GitHub Copilot ACP"
+        assert provider_label("gemini-acp") == "Gemini CLI ACP"
         assert provider_label("auto") == "Auto"
 
     def test_unknown_provider_preserves_original_name(self):
@@ -210,6 +211,12 @@ class TestProviderModelIds:
 
         assert "gpt-5.4" in ids
         assert "copilot-acp" not in ids
+
+    def test_gemini_acp_returns_curated_models(self):
+        ids = provider_model_ids("gemini-acp")
+
+        assert "gemini-2.5-flash" in ids
+        assert "gemini-3-flash-preview" in ids
 
 
 # -- fetch_api_models --------------------------------------------------------

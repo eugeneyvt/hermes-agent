@@ -102,6 +102,12 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "copilot-acp": [
         "copilot-acp",
     ],
+    "gemini-acp": [
+        "gemini-3-flash-preview",
+        "gemini-3.1-flash-lite-preview",
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+    ],
     "copilot": [
         "gpt-5.4",
         "gpt-5.4-mini",
@@ -482,6 +488,7 @@ _PROVIDER_LABELS = {
     "openrouter": "OpenRouter",
     "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",
+    "gemini-acp": "Gemini CLI ACP",
     "nous": "Nous Portal",
     "copilot": "GitHub Copilot",
     "gemini": "Google AI Studio",
