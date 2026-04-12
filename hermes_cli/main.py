@@ -1542,8 +1542,7 @@ def _model_flow_openai_codex(config, current_model=""):
 
 
 _DEFAULT_QWEN_PORTAL_MODELS = [
-    "qwen3-coder-plus",
-    "qwen3-coder",
+    "coder-model",
 ]
 
 

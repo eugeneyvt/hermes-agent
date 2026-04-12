@@ -194,6 +194,11 @@ class TestProviderModelIds:
     def test_zai_returns_glm_models(self):
         assert "glm-5" in provider_model_ids("zai")
 
+    def test_qwen_oauth_returns_curated_models(self):
+        ids = provider_model_ids("qwen-oauth")
+
+        assert ids == ["coder-model"]
+
     def test_copilot_prefers_live_catalog(self):
         with patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={"api_key": "gh-token"}), \
              patch("hermes_cli.models._fetch_github_models", return_value=["gpt-5.4", "claude-sonnet-4.6"]):

@@ -839,6 +839,19 @@ def list_authenticated_providers(
                     if any(os.environ.get(ev) for ev in pcfg.api_key_env_vars):
                         has_creds = True
                         break
+        if not has_creds and overlay.auth_type in ("oauth_device_code", "oauth_external", "external_process"):
+            # Ask the provider-specific auth/status resolver first. This covers
+            # providers whose credentials live outside hermes auth.json, such as
+            # Qwen CLI OAuth and external-process backends like gemini-acp.
+            try:
+                from hermes_cli.auth import get_auth_status as _get_auth_status
+
+                status = _get_auth_status(hermes_slug)
+                if isinstance(status, dict) and (status.get("logged_in") or status.get("configured")):
+                    has_creds = True
+            except Exception as exc:
+                logger.debug("Auth status check failed for %s: %s", hermes_slug, exc)
+
         # Check auth store and credential pool for non-env-var credentials.
         # This applies to OAuth providers AND api_key providers that also
         # support OAuth (e.g. anthropic supports both API key and Claude Code
@@ -975,5 +988,3 @@ def list_authenticated_providers(
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
 
     return results
-
-

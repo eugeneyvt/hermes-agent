@@ -83,6 +83,9 @@ _DEFAULT_PROVIDER_MODELS = {
     "copilot-acp": [
         "copilot-acp",
     ],
+    "qwen-oauth": [
+        "coder-model",
+    ],
     "gemini-acp": [
         "gemini-3-flash-preview",
         "gemini-3.1-flash-lite-preview",

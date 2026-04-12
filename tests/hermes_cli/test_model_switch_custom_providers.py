@@ -45,6 +45,43 @@ def test_list_authenticated_providers_includes_custom_providers(monkeypatch):
     )
 
 
+def test_list_authenticated_providers_includes_qwen_oauth_and_gemini_acp(monkeypatch):
+    """No-args /model menus should include providers detected by auth status hooks."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(
+        providers_mod,
+        "HERMES_OVERLAYS",
+        {
+            "qwen-oauth": providers_mod.HERMES_OVERLAYS["qwen-oauth"],
+            "gemini-acp": providers_mod.HERMES_OVERLAYS["gemini-acp"],
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth.get_auth_status",
+        lambda provider_id=None: {
+            "qwen-oauth": {"logged_in": True},
+            "gemini-acp": {"configured": True},
+        }.get(provider_id, {}),
+    )
+    monkeypatch.setattr("hermes_cli.auth._load_auth_store", lambda: {})
+
+    providers = list_authenticated_providers(
+        current_provider="qwen-oauth",
+        user_providers={},
+        custom_providers=[],
+        max_models=50,
+    )
+
+    indexed = {p["slug"]: p for p in providers}
+    assert indexed["qwen-oauth"]["models"] == ["coder-model"]
+    assert indexed["gemini-acp"]["models"] == [
+        "gemini-3-flash-preview",
+        "gemini-3.1-flash-lite-preview",
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+    ]
+
+
 def test_resolve_provider_full_finds_named_custom_provider():
     """Explicit /model --provider should resolve saved custom_providers entries."""
     resolved = resolve_provider_full(

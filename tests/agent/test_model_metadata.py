@@ -232,6 +232,12 @@ class TestGetModelContextLength:
         assert get_model_context_length("qwen3-coder-plus") == 1000000
 
     @patch("agent.model_metadata.fetch_model_metadata")
+    def test_qwen_portal_coder_alias_context_length(self, mock_fetch):
+        """coder-model should map to the Qwen portal coder alias with a 1M window."""
+        mock_fetch.return_value = {}
+        assert get_model_context_length("coder-model") == 1000000
+
+    @patch("agent.model_metadata.fetch_model_metadata")
     def test_qwen3_coder_context_length(self, mock_fetch):
         """qwen3-coder has a 256K context window, not the generic 128K Qwen default."""
         mock_fetch.return_value = {}
