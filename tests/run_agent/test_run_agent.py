@@ -3124,6 +3124,36 @@ def test_aiagent_uses_copilot_acp_client():
     assert mock_acp_client.call_args.kwargs["args"] == ["--acp", "--stdio"]
 
 
+def test_aiagent_uses_gemini_acp_client():
+    with (
+        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI") as mock_openai,
+        patch("agent.gemini_acp_client.GeminiACPClient") as mock_acp_client,
+    ):
+        acp_client = MagicMock()
+        mock_acp_client.return_value = acp_client
+
+        agent = AIAgent(
+            api_key="gemini-acp",
+            base_url="acp://gemini",
+            provider="gemini-acp",
+            acp_command="/usr/local/bin/gemini",
+            acp_args=["--acp"],
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    assert agent.client is acp_client
+    mock_openai.assert_not_called()
+    mock_acp_client.assert_called_once()
+    assert mock_acp_client.call_args.kwargs["base_url"] == "acp://gemini"
+    assert mock_acp_client.call_args.kwargs["api_key"] == "gemini-acp"
+    assert mock_acp_client.call_args.kwargs["command"] == "/usr/local/bin/gemini"
+    assert mock_acp_client.call_args.kwargs["args"] == ["--acp"]
+
+
 def test_quiet_spinner_allowed_with_explicit_print_fn(agent):
     agent._print_fn = lambda *_a, **_kw: None
     with patch.object(run_agent.sys.stdout, "isatty", return_value=False):
