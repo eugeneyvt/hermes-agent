@@ -4031,6 +4031,7 @@ class AIAgent:
             from agent.copilot_acp_client import CopilotACPClient
 
             client = CopilotACPClient(**client_kwargs)
+            self._sync_client_stream_handlers(client)
             logger.info(
                 "Copilot ACP client created (%s, shared=%s) %s",
                 reason,
@@ -4042,6 +4043,7 @@ class AIAgent:
             from agent.gemini_acp_client import GeminiACPClient
 
             client = GeminiACPClient(**client_kwargs)
+            self._sync_client_stream_handlers(client)
             logger.info(
                 "Gemini ACP client created (%s, shared=%s) %s",
                 reason,
@@ -4826,6 +4828,153 @@ class AIAgent:
                 cb(text)
             except Exception:
                 pass
+
+    def _relay_client_tool_progress(
+        self,
+        event_type: str,
+        tool_name: str | None = None,
+        preview: str | None = None,
+        args: dict | None = None,
+        **kwargs,
+    ) -> None:
+        """Accept remote tool events from ACP clients, then forward to the UI.
+
+        Gemini ACP executes Hermes tools out-of-process via the MCP bridge, so
+        these lifecycle events do not flow through ``_execute_tool_calls()``.
+        Route them through the agent first so the main process can track active
+        tool state before forwarding to any platform/UI callback.
+        """
+        if event_type == "tool.started" and tool_name:
+            self._current_tool = tool_name
+            self._touch_activity(f"remote tool started: {tool_name}")
+        elif event_type == "tool.completed":
+            duration = kwargs.get("duration")
+            if tool_name:
+                if isinstance(duration, (int, float)):
+                    self._touch_activity(
+                        f"remote tool completed: {tool_name} ({float(duration):.1f}s)"
+                    )
+                else:
+                    self._touch_activity(f"remote tool completed: {tool_name}")
+            self._current_tool = None
+
+        cb = self.tool_progress_callback
+        if cb is not None:
+            try:
+                cb(event_type, tool_name, preview, args, **kwargs)
+            except Exception:
+                logger.debug("tool_progress_callback error in ACP relay", exc_info=True)
+
+    def _relay_client_tool_start(
+        self,
+        tool_call_id: str,
+        function_name: str,
+        function_args: dict | None,
+    ) -> None:
+        """Forward remote tool-start events to any registered UI consumer."""
+        cb = self.tool_start_callback
+        if cb is not None:
+            try:
+                cb(tool_call_id, function_name, function_args)
+            except Exception:
+                logger.debug("tool_start_callback error in ACP relay", exc_info=True)
+
+    def _relay_client_tool_complete(
+        self,
+        tool_call_id: str,
+        function_name: str,
+        function_args: dict | None,
+        function_result: str,
+    ) -> None:
+        """Forward remote tool-complete events to any registered UI consumer."""
+        cb = self.tool_complete_callback
+        if cb is not None:
+            try:
+                cb(tool_call_id, function_name, function_args, function_result)
+            except Exception:
+                logger.debug("tool_complete_callback error in ACP relay", exc_info=True)
+
+    def _handle_client_tool_signal(self, payload: dict[str, Any]) -> None:
+        """Parse a raw remote tool-event payload and trigger standard callbacks."""
+        if not isinstance(payload, dict):
+            return
+
+        event_type = str(payload.get("event_type") or "").strip()
+        if not event_type:
+            return
+
+        tool_name = str(payload.get("tool_name") or "").strip() or None
+        tool_call_id = str(payload.get("tool_call_id") or "").strip()
+        preview = payload.get("preview")
+        if preview is not None and not isinstance(preview, str):
+            preview = str(preview)
+        args = payload.get("args")
+        if not isinstance(args, dict):
+            args = {}
+
+        if event_type == "tool.started":
+            self._relay_client_tool_progress(event_type, tool_name, preview, args)
+            if tool_call_id:
+                self._relay_client_tool_start(tool_call_id, tool_name or "", args)
+            return
+
+        if event_type == "tool.completed":
+            duration = payload.get("duration")
+            try:
+                duration = float(duration or 0)
+            except (TypeError, ValueError):
+                duration = 0.0
+            is_error = bool(payload.get("is_error", False))
+            result = payload.get("result")
+            if result is None:
+                result_text = ""
+            elif isinstance(result, str):
+                result_text = result
+            else:
+                try:
+                    result_text = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+                except Exception:
+                    result_text = str(result)
+            self._relay_client_tool_progress(
+                event_type,
+                tool_name,
+                None,
+                None,
+                duration=duration,
+                is_error=is_error,
+            )
+            if tool_call_id:
+                self._relay_client_tool_complete(tool_call_id, tool_name or "", args, result_text)
+
+    def _sync_client_stream_handlers(self, client: Any | None = None) -> None:
+        """Apply the current stream/tool handlers to an ACP-style client."""
+        target = client or getattr(self, "client", None)
+        if target is None or not hasattr(target, "set_stream_handlers"):
+            return
+
+        wants_remote_tool_events = any(
+            cb is not None
+            for cb in (
+                self.tool_progress_callback,
+                self.tool_start_callback,
+                self.tool_complete_callback,
+            )
+        )
+        try:
+            handler_kwargs = dict(
+                stream_delta_callback=self._fire_stream_delta if self._has_stream_consumers() else None,
+                reasoning_callback=self._fire_reasoning_delta if self.reasoning_callback else None,
+                tool_progress_callback=self._relay_client_tool_progress if wants_remote_tool_events else None,
+                tool_start_callback=self._relay_client_tool_start if wants_remote_tool_events else None,
+                tool_complete_callback=self._relay_client_tool_complete if wants_remote_tool_events else None,
+            )
+            if getattr(target, "supports_tool_signal_callback", False) is True:
+                handler_kwargs["tool_signal_callback"] = (
+                    self._handle_client_tool_signal if wants_remote_tool_events else None
+                )
+            target.set_stream_handlers(**handler_kwargs)
+        except Exception:
+            logger.debug("set_stream_handlers failed", exc_info=True)
 
     def _fire_tool_gen_started(self, tool_name: str) -> None:
         """Notify display layer that the model is generating tool call arguments.
@@ -7588,6 +7737,7 @@ class AIAgent:
 
         # Store stream callback for _interruptible_api_call to pick up
         self._stream_callback = stream_callback
+        self._sync_client_stream_handlers()
         self._persist_user_message_idx = None
         self._persist_user_message_override = persist_user_message
         # Generate unique task_id if not provided to isolate VMs between concurrent tasks

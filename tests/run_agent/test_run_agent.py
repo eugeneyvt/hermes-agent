@@ -3091,6 +3091,128 @@ def test_aiagent_uses_gemini_acp_client():
     assert mock_acp_client.call_args.kwargs["args"] == ["--acp"]
 
 
+def test_run_conversation_passes_tool_callbacks_to_client_stream_handlers():
+    response = _mock_response(content="done", finish_reason="stop", tool_calls=[])
+    with (
+        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+        patch("hermes_logging.setup_logging"),
+    ):
+        agent = AIAgent(
+            api_key="test-key-1234567890",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.client = MagicMock()
+        agent.client.set_stream_handlers = MagicMock()
+        agent.tool_progress_callback = lambda *args, **kwargs: None
+        agent.tool_start_callback = lambda *args, **kwargs: None
+        agent.tool_complete_callback = lambda *args, **kwargs: None
+        agent.suppress_status_output = True
+        agent._interruptible_api_call = lambda *args, **kwargs: response
+        agent._persist_session = lambda *args, **kwargs: None
+        agent._save_trajectory = lambda *args, **kwargs: None
+        agent._save_session_log = lambda *args, **kwargs: None
+
+        with patch("run_agent.time.sleep", return_value=None):
+            result = agent.run_conversation("hello")
+
+    assert result["final_response"] == "done"
+    agent.client.set_stream_handlers.assert_called_once()
+    assert agent.client.set_stream_handlers.call_args.kwargs["tool_progress_callback"] == agent._relay_client_tool_progress
+    assert agent.client.set_stream_handlers.call_args.kwargs["tool_start_callback"] == agent._relay_client_tool_start
+    assert agent.client.set_stream_handlers.call_args.kwargs["tool_complete_callback"] == agent._relay_client_tool_complete
+
+
+def test_relay_client_tool_callbacks_forward_to_current_ui_handlers(agent):
+    progress_cb = MagicMock()
+    start_cb = MagicMock()
+    complete_cb = MagicMock()
+    touch = MagicMock()
+    agent.tool_progress_callback = progress_cb
+    agent.tool_start_callback = start_cb
+    agent.tool_complete_callback = complete_cb
+    agent._touch_activity = touch
+
+    agent._relay_client_tool_progress(
+        "tool.started",
+        "terminal",
+        "pwd",
+        {"command": "pwd"},
+    )
+    agent._relay_client_tool_start("mcp-call-1", "terminal", {"command": "pwd"})
+    agent._relay_client_tool_progress(
+        "tool.completed",
+        "terminal",
+        None,
+        None,
+        duration=0.42,
+        is_error=False,
+    )
+    agent._relay_client_tool_complete(
+        "mcp-call-1",
+        "terminal",
+        {"command": "pwd"},
+        '{"output":"/tmp"}',
+    )
+
+    assert agent._current_tool is None
+    assert touch.call_args_list[0].args[0] == "remote tool started: terminal"
+
+
+def test_handle_client_tool_signal_triggers_standard_tool_callbacks(agent):
+    progress_cb = MagicMock()
+    start_cb = MagicMock()
+    complete_cb = MagicMock()
+    touch = MagicMock()
+    agent.tool_progress_callback = progress_cb
+    agent.tool_start_callback = start_cb
+    agent.tool_complete_callback = complete_cb
+    agent._touch_activity = touch
+
+    agent._handle_client_tool_signal(
+        {
+            "event_type": "tool.started",
+            "tool_name": "terminal",
+            "tool_call_id": "mcp-call-1",
+            "preview": "pwd",
+            "args": {"command": "pwd"},
+        }
+    )
+    agent._handle_client_tool_signal(
+        {
+            "event_type": "tool.completed",
+            "tool_name": "terminal",
+            "tool_call_id": "mcp-call-1",
+            "args": {"command": "pwd"},
+            "result": {"output": "/tmp"},
+            "duration": 0.42,
+            "is_error": False,
+        }
+    )
+
+    progress_cb.assert_any_call("tool.started", "terminal", "pwd", {"command": "pwd"})
+    progress_cb.assert_any_call(
+        "tool.completed",
+        "terminal",
+        None,
+        None,
+        duration=0.42,
+        is_error=False,
+    )
+    start_cb.assert_called_once_with("mcp-call-1", "terminal", {"command": "pwd"})
+    complete_cb.assert_called_once()
+    assert complete_cb.call_args.args[:3] == (
+        "mcp-call-1",
+        "terminal",
+        {"command": "pwd"},
+    )
+    assert json.loads(complete_cb.call_args.args[3]) == {"output": "/tmp"}
+    assert touch.call_args_list[1].args[0] == "remote tool completed: terminal (0.4s)"
+
+
 def test_quiet_spinner_allowed_with_explicit_print_fn(agent):
     agent._print_fn = lambda *_a, **_kw: None
     with patch.object(run_agent.sys.stdout, "isatty", return_value=False):

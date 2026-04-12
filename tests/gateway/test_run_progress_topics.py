@@ -5,6 +5,7 @@ import sys
 import time
 import types
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -82,6 +83,29 @@ class LongPreviewAgent:
     def run_conversation(self, message, conversation_history=None, task_id=None):
         self.tool_progress_callback("tool.started", "terminal", self.LONG_CMD, {})
         time.sleep(0.35)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class GeminiCleanupAgent:
+    """Agent stub that mimics a cached Gemini ACP client."""
+
+    last_instance = None
+
+    def __init__(self, **kwargs):
+        self.provider = "gemini-acp"
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tool_start_callback = kwargs.get("tool_start_callback")
+        self.tool_complete_callback = kwargs.get("tool_complete_callback")
+        self.stream_delta_callback = kwargs.get("stream_delta_callback")
+        self.tools = []
+        self._sync_client_stream_handlers = MagicMock()
+        GeminiCleanupAgent.last_instance = self
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
         return {
             "final_response": "done",
             "messages": [],
@@ -575,3 +599,54 @@ async def test_run_agent_queued_message_does_not_treat_commentary_as_final(monke
     assert result["final_response"] == "final response 2"
     assert "I'll inspect the repo first." in sent_texts
     assert "final response 1" in sent_texts
+
+
+def test_run_agent_clears_cached_gemini_acp_handlers_after_turn(monkeypatch, tmp_path):
+    import asyncio
+
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = GeminiCleanupAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = ProgressCaptureAdapter(platform=Platform.TELEGRAM)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(
+        gateway_run,
+        "_resolve_runtime_agent_kwargs",
+        lambda: {"api_key": "***", "provider": "gemini-acp"},
+    )
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    result = asyncio.get_event_loop().run_until_complete(
+        runner._run_agent(
+            message="hello",
+            context_prompt="",
+            history=[],
+            source=source,
+            session_id="sess-gemini-cleanup",
+            session_key="agent:main:telegram:dm:12345",
+        )
+    )
+
+    assert result["final_response"] == "done"
+    agent = GeminiCleanupAgent.last_instance
+    assert agent is not None
+    assert agent.tool_progress_callback is None
+    assert agent.tool_start_callback is None
+    assert agent.tool_complete_callback is None
+    assert agent.stream_delta_callback is None
+    agent._sync_client_stream_handlers.assert_called_once()
