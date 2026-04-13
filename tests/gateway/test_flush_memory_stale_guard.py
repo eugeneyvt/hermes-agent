@@ -100,6 +100,7 @@ class TestMemoryInjection:
             runner._flush_memories_for_session("session_123")
 
         tmp_agent.run_conversation.assert_called_once()
+        tmp_agent.close.assert_called_once()
         flush_prompt = tmp_agent.run_conversation.call_args.kwargs.get("user_message", "")
 
         assert "Agent knows Python" in flush_prompt
@@ -124,6 +125,7 @@ class TestMemoryInjection:
             runner._flush_memories_for_session("session_456")
 
         tmp_agent.run_conversation.assert_called_once()
+        tmp_agent.close.assert_called_once()
         flush_prompt = tmp_agent.run_conversation.call_args.kwargs.get("user_message", "")
         assert "Do NOT overwrite or remove entries" not in flush_prompt
         assert "Review the conversation above" in flush_prompt
@@ -145,8 +147,23 @@ class TestMemoryInjection:
             runner._flush_memories_for_session("session_789")
 
         tmp_agent.run_conversation.assert_called_once()
+        tmp_agent.close.assert_called_once()
         flush_prompt = tmp_agent.run_conversation.call_args.kwargs.get("user_message", "")
         assert "current live state of memory" not in flush_prompt
+
+    def test_flush_agent_closed_even_when_run_fails(self, tmp_path, monkeypatch):
+        """Temporary flush agents must be closed even if run_conversation fails."""
+        runner, tmp_agent, _ = _make_flush_context(monkeypatch)
+        tmp_agent.run_conversation.side_effect = RuntimeError("boom")
+
+        with (
+            patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "k"}),
+            patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+            patch.dict("sys.modules", {"tools.memory_tool": MagicMock(get_memory_dir=lambda: tmp_path)}),
+        ):
+            runner._flush_memories_for_session("session_close_fail")
+
+        tmp_agent.close.assert_called_once()
 
 
 class TestFlushAgentSilenced:

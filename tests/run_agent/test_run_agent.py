@@ -3140,6 +3140,9 @@ def test_aiagent_uses_gemini_acp_client():
             provider="gemini-acp",
             acp_command="/usr/local/bin/gemini",
             acp_args=["--acp"],
+            tool_progress_callback=lambda *_a, **_kw: None,
+            tool_start_callback=lambda *_a, **_kw: None,
+            tool_complete_callback=lambda *_a, **_kw: None,
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
@@ -3152,6 +3155,10 @@ def test_aiagent_uses_gemini_acp_client():
     assert mock_acp_client.call_args.kwargs["api_key"] == "gemini-acp"
     assert mock_acp_client.call_args.kwargs["command"] == "/usr/local/bin/gemini"
     assert mock_acp_client.call_args.kwargs["args"] == ["--acp"]
+    acp_client.set_stream_handlers.assert_called_once()
+    assert acp_client.set_stream_handlers.call_args.kwargs["tool_progress_callback"] == agent._relay_client_tool_progress
+    assert acp_client.set_stream_handlers.call_args.kwargs["tool_start_callback"] == agent._relay_client_tool_start
+    assert acp_client.set_stream_handlers.call_args.kwargs["tool_complete_callback"] == agent._relay_client_tool_complete
 
 
 def test_run_conversation_passes_tool_callbacks_to_client_stream_handlers():
