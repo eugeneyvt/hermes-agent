@@ -259,13 +259,18 @@ def test_sync_turn_uses_configured_conversation_wing(tmp_path, monkeypatch):
 
 
 def test_prefetch_uses_wakeup_on_first_turn(provider):
-    p, _, _ = provider
+    p, cli_calls, mcp_calls = provider
     p.on_turn_start(1, "hi")
+    before_mcp_calls = len(mcp_calls)
 
     result = p.prefetch("auth decisions")
 
     assert "wake up text" in result
-    assert p._last_prefetch_status == "wake_up"
+    wakeup_calls = [cmd for cmd, _ in cli_calls if "wake-up" in cmd]
+    assert wakeup_calls
+    assert "--wing" in wakeup_calls[-1]
+    assert "wing_hermes_sessions__profile_hermes" in wakeup_calls[-1]
+    assert all(name != "mempalace_search" for name, _, _ in mcp_calls[before_mcp_calls:])
 
 
 def test_queue_prefetch_primes_cache_from_mcp_search(provider):
@@ -503,3 +508,36 @@ def test_cli_flush_uses_scoped_conversation_wing(tmp_path, monkeypatch, capsys):
     mine_calls = [cmd for cmd, _ in calls if "mine" in cmd]
     assert mine_calls
     assert "wing_custom_sessions__profile_hermes" in mine_calls[-1]
+
+
+def test_cli_wakeup_uses_scoped_conversation_wing_by_default(tmp_path, monkeypatch, capsys):
+    save_provider_config(
+        {
+            "command": "python3 -m mempalace",
+            "palace_path": str(tmp_path / "palace"),
+            "conversation_wing": "wing_custom_sessions",
+            "agent_name": "hermes",
+            "scope_by_profile": True,
+            "scope_by_user": True,
+        },
+        str(tmp_path),
+    )
+
+    monkeypatch.setattr(mempalace_cli, "_load_cfg", lambda: load_provider_config(str(tmp_path)))
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return _completed(stdout="wake up text\n")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    args = type("Args", (), {"wing": None})()
+    mempalace_cli.cmd_wakeup(args)
+    capsys.readouterr()
+
+    wakeup_calls = [cmd for cmd, _ in calls if "wake-up" in cmd]
+    assert wakeup_calls
+    assert "--wing" in wakeup_calls[-1]
+    assert "wing_custom_sessions__profile_hermes" in wakeup_calls[-1]

@@ -144,6 +144,8 @@ def cmd_wakeup(args) -> None:
     cmd = ["wake-up"]
     if args.wing:
         cmd += ["--wing", args.wing]
+    else:
+        cmd += ["--wing", _conversation_wing(cfg)]
     command, result = _run_cli(cfg, cmd)
     code = _print_result(command, result)
     if code != 0:
