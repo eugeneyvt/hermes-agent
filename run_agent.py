@@ -1226,9 +1226,11 @@ class AIAgent:
         # Inject memory provider tool schemas into the tool surface
         if self._memory_manager and self.tools is not None:
             for _schema in self._memory_manager.get_all_tool_schemas():
+                _tname = _schema.get("name", "")
+                if _tname and _tname in self.valid_tool_names:
+                    continue
                 _wrapped = {"type": "function", "function": _schema}
                 self.tools.append(_wrapped)
-                _tname = _schema.get("name", "")
                 if _tname:
                     self.valid_tool_names.add(_tname)
 

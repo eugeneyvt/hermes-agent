@@ -1286,64 +1286,79 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     """
 
     def _handler(args: dict, **kwargs) -> str:
-        with _lock:
-            server = _servers.get(server_name)
-        if not server or not server.session:
-            return json.dumps({
-                "error": f"MCP server '{server_name}' is not connected"
-            })
-
-        async def _call():
-            result = await server.session.call_tool(tool_name, arguments=args)
-            # MCP CallToolResult has .content (list of content blocks) and .isError
-            if result.isError:
-                error_text = ""
-                for block in (result.content or []):
-                    if hasattr(block, "text"):
-                        error_text += block.text
-                return json.dumps({
-                    "error": _sanitize_error(
-                        error_text or "MCP tool returned an error"
-                    )
-                })
-
-            # Collect text from content blocks
-            parts: List[str] = []
-            for block in (result.content or []):
-                if hasattr(block, "text"):
-                    parts.append(block.text)
-            text_result = "\n".join(parts) if parts else ""
-
-            # Combine content + structuredContent when both are present.
-            # MCP spec: content is model-oriented (text), structuredContent
-            # is machine-oriented (JSON metadata).  For an AI agent, content
-            # is the primary payload; structuredContent supplements it.
-            structured = getattr(result, "structuredContent", None)
-            if structured is not None:
-                if text_result:
-                    return json.dumps({
-                        "result": text_result,
-                        "structuredContent": structured,
-                    })
-                return json.dumps({"result": structured})
-            return json.dumps({"result": text_result})
-
-        try:
-            return _run_on_mcp_loop(_call(), timeout=tool_timeout)
-        except InterruptedError:
-            return _interrupted_call_result()
-        except Exception as exc:
-            logger.error(
-                "MCP tool %s/%s call failed: %s",
-                server_name, tool_name, exc,
-            )
-            return json.dumps({
-                "error": _sanitize_error(
-                    f"MCP call failed: {type(exc).__name__}: {exc}"
-                )
-            })
+        return json.dumps(call_mcp_tool(server_name, tool_name, args, timeout=tool_timeout))
 
     return _handler
+
+
+def _decode_call_tool_result(result) -> dict:
+    """Normalize an MCP ``CallToolResult`` into a Hermes-friendly payload."""
+    if result.isError:
+        error_text = ""
+        for block in (result.content or []):
+            if hasattr(block, "text"):
+                error_text += block.text
+        return {"error": _sanitize_error(error_text or "MCP tool returned an error")}
+
+    parts: List[str] = []
+    for block in (result.content or []):
+        if hasattr(block, "text"):
+            parts.append(block.text)
+    text_result = "\n".join(parts) if parts else ""
+
+    structured = getattr(result, "structuredContent", None)
+    if structured is not None:
+        if text_result:
+            return {"result": text_result, "structuredContent": structured}
+        return {"result": structured}
+
+    return {"result": text_result}
+
+
+def is_mcp_server_connected(server_name: str) -> bool:
+    """Return True when a named MCP server has an active session."""
+    with _lock:
+        server = _servers.get(server_name)
+    return bool(server and server.session)
+
+
+def get_mcp_tool_schemas(server_name: str) -> List[dict]:
+    """Return converted tool schemas for a connected MCP server."""
+    with _lock:
+        server = _servers.get(server_name)
+    if not server or not server.session:
+        return []
+    return [_convert_mcp_schema(server_name, tool) for tool in server._tools]
+
+
+def call_mcp_tool(
+    server_name: str,
+    tool_name: str,
+    arguments: Optional[dict] = None,
+    *,
+    timeout: Optional[float] = None,
+) -> dict:
+    """Call a connected MCP tool and return a normalized payload dict."""
+    with _lock:
+        server = _servers.get(server_name)
+    if not server or not server.session:
+        return {"error": f"MCP server '{server_name}' is not connected"}
+
+    async def _call():
+        result = await server.session.call_tool(tool_name, arguments=arguments or {})
+        return _decode_call_tool_result(result)
+
+    try:
+        return _run_on_mcp_loop(_call(), timeout=timeout)
+    except InterruptedError:
+        return json.loads(_interrupted_call_result())
+    except Exception as exc:
+        logger.error("MCP tool %s/%s call failed: %s", server_name, tool_name, exc)
+        return {
+            "error": _sanitize_error(
+                f"MCP call failed: {type(exc).__name__}: {exc}"
+            )
+        }
 
 
 def _make_list_resources_handler(server_name: str, tool_timeout: float):

@@ -1,0 +1,3 @@
+name: mempalace
+version: 0.1.0
+description: "MemPalace CLI and hook based memory provider for Hermes."
