@@ -1612,102 +1612,116 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     """
 
     def _handler(args: dict, **kwargs) -> str:
-        # Circuit breaker: if this server has failed too many times
-        # consecutively, short-circuit with a clear message so the model
-        # stops retrying and uses alternative approaches (#10447).
-        if _server_error_counts.get(server_name, 0) >= _CIRCUIT_BREAKER_THRESHOLD:
-            return json.dumps({
-                "error": (
-                    f"MCP server '{server_name}' is unreachable after "
-                    f"{_CIRCUIT_BREAKER_THRESHOLD} consecutive failures. "
-                    f"Do NOT retry this tool — use alternative approaches "
-                    f"or ask the user to check the MCP server."
-                )
-            }, ensure_ascii=False)
-
-        with _lock:
-            server = _servers.get(server_name)
-        if not server or not server.session:
-            _server_error_counts[server_name] = _server_error_counts.get(server_name, 0) + 1
-            return json.dumps({
-                "error": f"MCP server '{server_name}' is not connected"
-            }, ensure_ascii=False)
-
-        async def _call():
-            result = await server.session.call_tool(tool_name, arguments=args)
-            # MCP CallToolResult has .content (list of content blocks) and .isError
-            if result.isError:
-                error_text = ""
-                for block in (result.content or []):
-                    if hasattr(block, "text"):
-                        error_text += block.text
-                return json.dumps({
-                    "error": _sanitize_error(
-                        error_text or "MCP tool returned an error"
-                    )
-                }, ensure_ascii=False)
-
-            # Collect text from content blocks
-            parts: List[str] = []
-            for block in (result.content or []):
-                if hasattr(block, "text"):
-                    parts.append(block.text)
-            text_result = "\n".join(parts) if parts else ""
-
-            # Combine content + structuredContent when both are present.
-            # MCP spec: content is model-oriented (text), structuredContent
-            # is machine-oriented (JSON metadata).  For an AI agent, content
-            # is the primary payload; structuredContent supplements it.
-            structured = getattr(result, "structuredContent", None)
-            if structured is not None:
-                if text_result:
-                    return json.dumps({
-                        "result": text_result,
-                        "structuredContent": structured,
-                    }, ensure_ascii=False)
-                return json.dumps({"result": structured}, ensure_ascii=False)
-            return json.dumps({"result": text_result}, ensure_ascii=False)
-
-        def _call_once():
-            return _run_on_mcp_loop(_call(), timeout=tool_timeout)
-
-        try:
-            result = _call_once()
-            # Check if the MCP tool itself returned an error
-            try:
-                parsed = json.loads(result)
-                if "error" in parsed:
-                    _server_error_counts[server_name] = _server_error_counts.get(server_name, 0) + 1
-                else:
-                    _server_error_counts[server_name] = 0  # success — reset
-            except (json.JSONDecodeError, TypeError):
-                _server_error_counts[server_name] = 0  # non-JSON = success
-            return result
-        except InterruptedError:
-            return _interrupted_call_result()
-        except Exception as exc:
-            # Auth-specific recovery path: consult the manager, signal
-            # reconnect if viable, retry once. Returns None to fall
-            # through for non-auth exceptions.
-            recovered = _handle_auth_error_and_retry(
-                server_name, exc, _call_once,
-                f"tools/call {tool_name}",
-            )
-            if recovered is not None:
-                return recovered
-
-            _server_error_counts[server_name] = _server_error_counts.get(server_name, 0) + 1
-            logger.error(
-                "MCP tool %s/%s call failed: %s",
-                server_name, tool_name, exc,
-            )
-            return json.dumps({
-                "error": _sanitize_error(
-                    f"MCP call failed: {type(exc).__name__}: {exc}"
-                )
-            }, ensure_ascii=False)
+        return json.dumps(call_mcp_tool(server_name, tool_name, args, timeout=tool_timeout))
 
     return _handler
+
+
+def _decode_call_tool_result(result) -> dict:
+    """Normalize an MCP ``CallToolResult`` into a Hermes-friendly payload."""
+    if result.isError:
+        error_text = ""
+        for block in (result.content or []):
+            if hasattr(block, "text"):
+                error_text += block.text
+        return {"error": _sanitize_error(error_text or "MCP tool returned an error")}
+
+    parts: List[str] = []
+    for block in (result.content or []):
+        if hasattr(block, "text"):
+            parts.append(block.text)
+    text_result = "\n".join(parts) if parts else ""
+
+    structured = getattr(result, "structuredContent", None)
+    if structured is not None:
+        if text_result:
+            return {"result": text_result, "structuredContent": structured}
+        return {"result": structured}
+
+    return {"result": text_result}
+
+
+def is_mcp_server_connected(server_name: str) -> bool:
+    """Return True when a named MCP server has an active session."""
+    with _lock:
+        server = _servers.get(server_name)
+    return bool(server and server.session)
+
+
+def get_mcp_tool_schemas(server_name: str) -> List[dict]:
+    """Return converted tool schemas for a connected MCP server."""
+    with _lock:
+        server = _servers.get(server_name)
+    if not server or not server.session:
+        return []
+    return [_convert_mcp_schema(server_name, tool) for tool in server._tools]
+
+
+def call_mcp_tool(
+    server_name: str,
+    tool_name: str,
+    arguments: Optional[dict] = None,
+    *,
+    timeout: Optional[float] = None,
+) -> dict:
+    """Call a connected MCP tool and return a normalized payload dict."""
+    # Circuit breaker: if this server has failed too many times
+    # consecutively, short-circuit with a clear message so the model
+    # stops retrying and uses alternative approaches (#10447).
+    if _server_error_counts.get(server_name, 0) >= _CIRCUIT_BREAKER_THRESHOLD:
+        return {
+            "error": (
+                f"MCP server '{server_name}' is unreachable after "
+                f"{_CIRCUIT_BREAKER_THRESHOLD} consecutive failures. "
+                f"Do NOT retry this tool — use alternative approaches "
+                f"or ask the user to check the MCP server."
+            )
+        }
+
+    with _lock:
+        server = _servers.get(server_name)
+    if not server or not server.session:
+        _server_error_counts[server_name] = _server_error_counts.get(server_name, 0) + 1
+        return {"error": f"MCP server '{server_name}' is not connected"}
+
+    async def _call():
+        result = await server.session.call_tool(tool_name, arguments=arguments or {})
+        return _decode_call_tool_result(result)
+
+    def _call_once():
+        return _run_on_mcp_loop(_call(), timeout=timeout)
+
+    try:
+        result = _call_once()
+        if "error" in result:
+            _server_error_counts[server_name] = _server_error_counts.get(server_name, 0) + 1
+        else:
+            _server_error_counts[server_name] = 0
+        return result
+    except InterruptedError:
+        return json.loads(_interrupted_call_result())
+    except Exception as exc:
+        recovered = _handle_auth_error_and_retry(
+            server_name,
+            exc,
+            lambda: json.dumps(_call_once(), ensure_ascii=False),
+            f"tools/call {tool_name}",
+        )
+        if recovered is not None:
+            parsed = json.loads(recovered)
+            if "error" in parsed:
+                _server_error_counts[server_name] = _server_error_counts.get(server_name, 0) + 1
+            else:
+                _server_error_counts[server_name] = 0
+            return parsed
+
+        _server_error_counts[server_name] = _server_error_counts.get(server_name, 0) + 1
+        logger.error("MCP tool %s/%s call failed: %s", server_name, tool_name, exc)
+        return {
+            "error": _sanitize_error(
+                f"MCP call failed: {type(exc).__name__}: {exc}"
+            )
+        }
 
 
 def _make_list_resources_handler(server_name: str, tool_timeout: float):
