@@ -184,7 +184,7 @@ class MempalaceMemoryProvider(RuntimeMixin, MCPBridgeMixin, SessionIOMixin, Memo
             "- Treat recalled MemPalace context as background memory, not as fresh user input.",
             "- Use mempalace_status at session start for protocol/status context.",
             "- Use mempalace_search and the MemPalace KG tools before answering questions about past work, people, or decisions.",
-            "- Session filing follows the upstream hook and conversation-mining flow, not direct Chroma writes from Hermes.",
+            "- Session filing uses transcript snapshots for MemPalace conversation mining plus direct MCP writes for durable Hermes records.",
         ]
         return "\n".join(lines)
 
@@ -255,7 +255,7 @@ class MempalaceMemoryProvider(RuntimeMixin, MCPBridgeMixin, SessionIOMixin, Memo
         def _work() -> None:
             payload = self._invoke_hook("stop", synchronous=False)
             if payload.get("decision") == "block":
-                self._run_mine(background=True, reason="stop")
+                self._last_mine_status = "checkpoint_pending"
             self._mark_write_success(active_session)
 
         self._enqueue_task(_work, label="sync_turn")
@@ -286,8 +286,8 @@ class MempalaceMemoryProvider(RuntimeMixin, MCPBridgeMixin, SessionIOMixin, Memo
             )
 
         self._invoke_hook("stop", synchronous=True)
-        self._run_mine(background=False, reason="session_end")
-        self._maybe_reconnect_mcp()
+        if self._snapshot_and_mine(reason="session_end", rotate_live=False):
+            self._maybe_reconnect_mcp()
 
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
         if not self._writes_enabled:
@@ -297,8 +297,8 @@ class MempalaceMemoryProvider(RuntimeMixin, MCPBridgeMixin, SessionIOMixin, Memo
             )
             return ""
         self._invoke_hook("precompact", synchronous=True)
-        self._run_mine(background=False, reason="precompact")
-        self._maybe_reconnect_mcp()
+        if self._snapshot_and_mine(reason="precompact", rotate_live=True):
+            self._maybe_reconnect_mcp()
         return ""
 
     def on_memory_write(self, action: str, target: str, content: str) -> None:

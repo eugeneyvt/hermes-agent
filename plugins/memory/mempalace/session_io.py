@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import queue
+import shutil
 import subprocess
 import threading
 from datetime import datetime, timezone
@@ -23,6 +24,17 @@ logger = logging.getLogger(__name__)
 
 
 class SessionIOMixin:
+    def _session_meta_entry(self) -> dict[str, Any]:
+        return {
+            "type": "session_meta",
+            "payload": {
+                "session_id": self._session_id,
+                "agent_identity": self._agent_identity,
+                "scope_tag": self._scope_tag,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            },
+        }
+
     def _base_cli_command(self) -> list[str]:
         if not self._command:
             self._resolve_runtime()
@@ -97,7 +109,7 @@ class SessionIOMixin:
     def _run_mine(self, *, background: bool, reason: str) -> None:
         args = [
             "mine",
-            self._transcript_export_dir,
+            self._snapshot_export_dir(),
             "--mode",
             "convos",
             "--wing",
@@ -146,17 +158,67 @@ class SessionIOMixin:
         transcript = Path(self._transcript_path)
         if transcript.exists():
             return
-        meta = {
-            "type": "session_meta",
-            "payload": {
-                "session_id": self._session_id,
-                "agent_identity": self._agent_identity,
-                "scope_tag": self._scope_tag,
-                "created_at": datetime.now(timezone.utc).isoformat(),
-            },
-        }
         transcript.parent.mkdir(parents=True, exist_ok=True)
-        transcript.write_text(json.dumps(meta, ensure_ascii=False) + "\n", encoding="utf-8")
+        transcript.write_text(
+            json.dumps(self._session_meta_entry(), ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+
+    def _snapshot_export_dir(self) -> str:
+        return str(Path(self._transcript_export_dir) / "snapshots")
+
+    def _live_transcript_has_events(self) -> bool:
+        if not self._transcript_path:
+            return False
+        path = Path(self._transcript_path)
+        if not path.is_file():
+            return False
+        try:
+            with open(path, encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if entry.get("type") == "event_msg":
+                        return True
+        except OSError:
+            return False
+        return False
+
+    def _snapshot_transcript(self, *, reason: str) -> str:
+        if not self._transcript_path:
+            return ""
+        source = Path(self._transcript_path)
+        if not source.is_file() or not self._live_transcript_has_events():
+            return ""
+        snapshot_dir = Path(self._snapshot_export_dir())
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        snapshot_name = f"{self._session_id}__{reason}__{stamp}.jsonl"
+        target = snapshot_dir / snapshot_name
+        shutil.copy2(source, target)
+        return str(target)
+
+    def _reset_live_transcript(self) -> None:
+        if not self._transcript_path:
+            return
+        transcript = Path(self._transcript_path)
+        transcript.parent.mkdir(parents=True, exist_ok=True)
+        transcript.write_text(
+            json.dumps(self._session_meta_entry(), ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+
+    def _snapshot_and_mine(self, *, reason: str, rotate_live: bool) -> bool:
+        snapshot_path = self._snapshot_transcript(reason=reason)
+        if not snapshot_path:
+            self._last_mine_status = f"skip_{reason}_no_events"
+            return False
+        self._run_mine(background=False, reason=reason)
+        if rotate_live:
+            self._reset_live_transcript()
+        return True
 
     def _append_transcript_event(self, entry: dict[str, Any]) -> None:
         if not self._transcript_path:
