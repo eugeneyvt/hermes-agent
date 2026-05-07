@@ -15,6 +15,19 @@
 
 set -e
 
+# Guard against environment leakage when the installer is launched from another
+# Python-driven tool session (e.g. Hermes terminal tool). A pre-set PYTHONPATH
+# can force pip/entrypoints to import a different checkout than the one being
+# installed, which makes fresh installs appear broken or stale.
+if [ -n "${PYTHONPATH:-}" ]; then
+    echo "⚠ Ignoring inherited PYTHONPATH during install to avoid module shadowing"
+    unset PYTHONPATH
+fi
+if [ -n "${PYTHONHOME:-}" ]; then
+    echo "⚠ Ignoring inherited PYTHONHOME during install"
+    unset PYTHONHOME
+fi
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -729,9 +742,12 @@ install_system_packages() {
                         return 0
                     fi
                 fi
-            elif [ -e /dev/tty ]; then
+            elif (: </dev/tty) 2>/dev/null; then
                 # Non-interactive (e.g. curl | bash) but a terminal is available.
                 # Read the prompt from /dev/tty (same approach the setup wizard uses).
+                # Probe by actually opening /dev/tty: a bare existence test passes
+                # in Docker builds where the device node is in the mount namespace
+                # but opening fails with ENXIO. See #16746.
                 echo ""
                 log_info "sudo is needed ONLY to install optional system packages (${pkgs[*]}) via your package manager."
                 log_info "Hermes Agent itself does not require or retain root access."
@@ -1044,9 +1060,17 @@ setup_path() {
     command_link_display_dir="$(get_command_link_display_dir)"
 
     # Create a user-facing shim for the hermes command.
+    # We intentionally clear PYTHONPATH/PYTHONHOME here so inherited env vars
+    # can't make this launcher import modules from another checkout.
     mkdir -p "$command_link_dir"
-    ln -sf "$HERMES_BIN" "$command_link_dir/hermes"
-    log_success "Symlinked hermes → $command_link_display_dir/hermes"
+    cat > "$command_link_dir/hermes" <<EOF
+#!/usr/bin/env bash
+unset PYTHONPATH
+unset PYTHONHOME
+exec "$HERMES_BIN" "\$@"
+EOF
+    chmod +x "$command_link_dir/hermes"
+    log_success "Installed hermes launcher → $command_link_display_dir/hermes"
 
     if [ "$DISTRO" = "termux" ]; then
         export PATH="$command_link_dir:$PATH"
@@ -1055,10 +1079,37 @@ setup_path() {
         return 0
     fi
 
-    # FHS layout: /usr/local/bin is on PATH for every standard shell, nothing to inject.
+    # FHS layout: /usr/local/bin is normally on PATH for login shells (via
+    # /etc/profile pathmunge), but on RHEL/CentOS/Rocky/Alma 8+ non-login
+    # interactive root shells (su, sudo -s, tmux panes, some web terminals)
+    # only source /etc/bashrc, which does NOT add /usr/local/bin — and
+    # /root/.bash_profile doesn't either.  So verify with `command -v` and
+    # fall back to writing a PATH guard into /root/.bashrc when needed.
     if [ "$ROOT_FHS_LAYOUT" = true ]; then
         export PATH="$command_link_dir:$PATH"
-        log_info "/usr/local/bin is already on PATH for all shells"
+        # Probe a fresh non-login interactive bash the way the user will use it.
+        # `bash -i -c` sources ~/.bashrc but NOT ~/.bash_profile or /etc/profile,
+        # which is the exact scenario where RHEL root loses /usr/local/bin.
+        if env -i HOME="$HOME" TERM="${TERM:-dumb}" bash -i -c 'command -v hermes' \
+                >/dev/null 2>&1; then
+            log_info "/usr/local/bin is already on PATH for all shells"
+            log_success "hermes command ready"
+            return 0
+        fi
+
+        log_info "hermes not on PATH in non-login shells (common on RHEL-family)"
+        PATH_LINE='export PATH="/usr/local/bin:$PATH"'
+        PATH_COMMENT='# Hermes Agent — ensure /usr/local/bin is on PATH (RHEL non-login shells)'
+        for SHELL_CONFIG in "$HOME/.bashrc" "$HOME/.bash_profile"; do
+            [ -f "$SHELL_CONFIG" ] || continue
+            if ! grep -v '^[[:space:]]*#' "$SHELL_CONFIG" 2>/dev/null \
+                    | grep -qE 'PATH=.*(/usr/local/bin|\$command_link_dir)'; then
+                echo "" >> "$SHELL_CONFIG"
+                echo "$PATH_COMMENT" >> "$SHELL_CONFIG"
+                echo "$PATH_LINE" >> "$SHELL_CONFIG"
+                log_success "Added /usr/local/bin to PATH in $SHELL_CONFIG"
+            fi
+        done
         log_success "hermes command ready"
         return 0
     fi
@@ -1303,7 +1354,12 @@ run_setup_wizard() {
     # The setup wizard reads from /dev/tty, so it works even when the
     # install script itself is piped (curl | bash). Only skip if no
     # terminal is available at all (e.g. Docker build, CI).
-    if ! [ -e /dev/tty ]; then
+    #
+    # Probe by actually opening /dev/tty: a bare existence test passes
+    # in Docker builds where the device node is in the mount namespace
+    # but opening fails with ENXIO, so the wizard would proceed and
+    # then crash on `< /dev/tty` below.
+    if ! (: </dev/tty) 2>/dev/null; then
         log_info "Setup wizard skipped (no terminal available). Run 'hermes setup' after install."
         return 0
     fi
@@ -1365,7 +1421,10 @@ maybe_start_gateway() {
         fi
     fi
 
-    if ! [ -e /dev/tty ]; then
+    # Probe by actually opening /dev/tty: a bare existence test passes
+    # in Docker builds where the device node is in the mount namespace
+    # but opening fails with ENXIO. See #16746.
+    if ! (: </dev/tty) 2>/dev/null; then
         log_info "Gateway setup skipped (no terminal available). Run 'hermes gateway install' later."
         return 0
     fi
